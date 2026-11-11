@@ -1,0 +1,14 @@
+[package]
+name = "youtube-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+description = "Linux-first terminal YouTube client (Phase 0: shell)"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.29"
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
