@@ -33,7 +33,7 @@ fn main() -> Result<()> {
         app.set_mode(mode);
     }
 
-    run(&mut app)?;
+    run(&mut app, youtube_cli::app::InstantClock::new())?;
 
     Ok(())
 }

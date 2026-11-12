@@ -28,6 +28,23 @@
   `cargo test`, `cargo build` all clean
 - Docs: ARCHITECTURE.md, ROADMAP.md updated
 
+## Milestone 0.2 (done): Final foundation hardening
+- `Clock` trait integrated into the terminal event loop: `run(app, clock)` uses
+  `InstantClock` in production; deterministic `FixedClock` retained for tests
+- `TerminalSession::enter()` exception-safe for every init step, including
+  `Terminal::new()` failure after raw mode is enabled — cleans up alternate
+  screen and raw mode before returning the error
+- `xterm-256color` no longer misidentified as GNOME Terminal: identity uses
+  independent evidence (`KITTY_WINDOW_ID`, `VTE_VERSION`, `TERMINAL_EMULATOR`);
+  falls back to `Unknown`
+- Unit tests for terminal identity classification via pure `classify_identity`
+  with injected values (kitty, gnome, xterm-256color→Unknown, dumb→Unknown)
+- Lifecycle cleanup tests: session restores on drop; `restore()` is idempotent
+- Test count: 28 passing
+- `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`,
+  `cargo test`, `cargo build` all clean
+- Docs: ARCHITECTURE.md, ROADMAP.md updated
+
 ## Milestone 1 (next): FFmpeg frame decode + render
 - Invoke `ffmpeg` / `ffprobe` as subprocess (no native dev libs)
 - Decode a video file to rawvideo RGB frames via `std::process::Command`

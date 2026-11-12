@@ -8,7 +8,6 @@ use crossterm::terminal::{self, size, EnterAlternateScreen, LeaveAlternateScreen
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
-use std::time::Instant;
 
 /// Terminal *identity*: who is running us. Kept separate from capabilities so
 /// renderer selection never depends on the emulator name alone.
@@ -48,28 +47,43 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
-    /// Enter the alternate screen and raw mode. Returns an error without
-    /// leaving the terminal in a partially-initialized state: if any step
-    /// fails, everything already done is undone before the error propagates.
+    /// Enter the alternate screen and raw mode. The constructor is
+    /// exception-safe: every initialization step that can fail undoes the
+    /// steps completed before it, so a failure never leaves the terminal in a
+    /// partially-initialized (broken) state.
     pub fn enter() -> Result<Self> {
         let mut stdout = io::stdout();
 
-        // Step 1: alternate screen. If this fails we have nothing to undo.
-        execute!(stdout, EnterAlternateScreen)?;
+        // Step 1: Enter the alternate screen. Nothing to undo if this fails.
+        if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+            return Err(e.into());
+        }
 
-        // Step 2: raw mode. If this fails, leave the alternate screen.
+        // Step 2: Enable raw mode. If it fails, leave the alternate screen.
         if let Err(e) = terminal::enable_raw_mode() {
             let _ = execute!(stdout, LeaveAlternateScreen);
             return Err(e.into());
         }
 
+        // Step 3: Construct the Ratatui terminal. If it fails, disable raw
+        // mode and leave the alternate screen before returning the error.
+        //
+        // `CrosstermBackend::new(stdout)` takes ownership of `stdout`. On
+        // error the backend is dropped, so we obtain a fresh handle to the
+        // same underlying stdout for cleanup.
         let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
-
-        Ok(Self {
-            terminal,
-            active: true,
-        })
+        match Terminal::new(backend) {
+            Ok(terminal) => Ok(Self {
+                terminal,
+                active: true,
+            }),
+            Err(e) => {
+                let mut stdout = io::stdout();
+                let _ = terminal::disable_raw_mode();
+                let _ = execute!(stdout, LeaveAlternateScreen);
+                Err(e.into())
+            }
+        }
     }
 
     pub fn terminal(&mut self) -> &mut Terminal<CrosstermBackend<io::Stdout>> {
@@ -94,17 +108,53 @@ impl Drop for TerminalSession {
     }
 }
 
+/// Classify terminal identity from independent environment evidence.
+///
+/// Evidence is consulted in priority order. `TERM` alone is intentionally
+/// weak because `xterm-256color` is shared by many emulators and must not be
+/// mistaken for GNOME Terminal.
+pub fn classify_identity(
+    term: &str,
+    kitty_window_id: Option<&str>,
+    terminal_emulator: Option<&str>,
+    vte_version: Option<&str>,
+) -> TerminalIdentity {
+    // Kitty injects KITTY_WINDOW_ID — strongest independent evidence.
+    if kitty_window_id.is_some() {
+        return TerminalIdentity::Kitty;
+    }
+    if terminal_emulator.is_some_and(|v| v.eq_ignore_ascii_case("kitty")) {
+        return TerminalIdentity::Kitty;
+    }
+    if term.contains("kitty") {
+        return TerminalIdentity::Kitty;
+    }
+    // GNOME Terminal runs on VTE and sets VTE_VERSION.
+    if vte_version.is_some() {
+        return TerminalIdentity::GnomeTerminal;
+    }
+    if terminal_emulator.is_some_and(|v| v.to_ascii_lowercase().contains("gnome")) {
+        return TerminalIdentity::GnomeTerminal;
+    }
+    if term.contains("gnome") {
+        return TerminalIdentity::GnomeTerminal;
+    }
+    TerminalIdentity::Unknown
+}
+
 /// Detect terminal identity from the environment.
 pub fn detect_identity() -> TerminalIdentity {
     let term = std::env::var("TERM").unwrap_or_default();
+    let kitty_window_id = std::env::var("KITTY_WINDOW_ID").ok();
+    let terminal_emulator = std::env::var("TERMINAL_EMULATOR").ok();
+    let vte_version = std::env::var("VTE_VERSION").ok();
 
-    match term.as_str() {
-        "xterm-kitty" => TerminalIdentity::Kitty,
-        _ if term.contains("kitty") => TerminalIdentity::Kitty,
-        _ if term.contains("gnome") => TerminalIdentity::GnomeTerminal,
-        "xterm-256color" | "xterm-color" => TerminalIdentity::GnomeTerminal,
-        _ => TerminalIdentity::Other,
-    }
+    classify_identity(
+        &term,
+        kitty_window_id.as_deref(),
+        terminal_emulator.as_deref(),
+        vte_version.as_deref(),
+    )
 }
 
 /// Detect color depth conservatively.
@@ -181,17 +231,15 @@ pub fn graphics_protocol_available(_identity: TerminalIdentity) -> bool {
 
 /// Run the application: own the terminal session, drive the event loop, and
 /// restore the terminal on exit via the RAII guard.
-pub fn run(app: &mut App) -> Result<()> {
+///
+/// `clock` supplies elapsed time for playback updates. Production passes
+/// `InstantClock`; tests can pass a deterministic `FixedClock`.
+pub fn run(app: &mut App, mut clock: impl crate::app::Clock) -> Result<()> {
     let mut session = TerminalSession::enter()?;
     let terminal = session.terminal();
 
-    let start = Instant::now();
-    let mut last = start;
-
     loop {
-        let now = Instant::now();
-        let elapsed = now - last;
-        last = now;
+        let elapsed = clock.elapsed();
 
         terminal.draw(|f| ui::draw(f, app))?;
 
@@ -199,7 +247,6 @@ pub fn run(app: &mut App) -> Result<()> {
             break;
         }
 
-        // Update playback based on elapsed wall-clock time.
         app.update(elapsed);
 
         if event::poll(std::time::Duration::from_millis(16))? {
@@ -233,18 +280,85 @@ mod tests {
 
     #[test]
     fn identity_recognizes_xterm_kitty() {
-        // TERM override is not possible in-process; test the matcher logic
-        // indirectly by checking the fallback path is sane.
+        // detect_identity reads real env; assert only that it returns a valid
+        // variant and never panics.
         assert!(matches!(
             detect_identity(),
-            TerminalIdentity::Kitty | TerminalIdentity::GnomeTerminal | TerminalIdentity::Other
+            TerminalIdentity::Kitty
+                | TerminalIdentity::GnomeTerminal
+                | TerminalIdentity::Unknown
+                | TerminalIdentity::Other
         ));
     }
 
     #[test]
+    fn classify_kitty_window_id() {
+        assert_eq!(
+            classify_identity("xterm-256color", Some("1"), None, None),
+            TerminalIdentity::Kitty
+        );
+    }
+
+    #[test]
+    fn classify_kitty_terminal_emulator() {
+        assert_eq!(
+            classify_identity("xterm-256color", None, Some("kitty"), None),
+            TerminalIdentity::Kitty
+        );
+    }
+
+    #[test]
+    fn classify_kitty_term() {
+        assert_eq!(
+            classify_identity("xterm-kitty", None, None, None),
+            TerminalIdentity::Kitty
+        );
+    }
+
+    #[test]
+    fn classify_gnome_vte_version() {
+        assert_eq!(
+            classify_identity("xterm-256color", None, None, Some("4200")),
+            TerminalIdentity::GnomeTerminal
+        );
+    }
+
+    #[test]
+    fn classify_gnome_terminal_emulator() {
+        assert_eq!(
+            classify_identity("xterm-256color", None, Some("gnome-terminal"), None),
+            TerminalIdentity::GnomeTerminal
+        );
+    }
+
+    #[test]
+    fn classify_gnome_term() {
+        assert_eq!(
+            classify_identity("gnome-terminal", None, None, None),
+            TerminalIdentity::GnomeTerminal
+        );
+    }
+
+    #[test]
+    fn classify_xterm_256color_is_not_gnome_terminal() {
+        // xterm-256color is generic and shared by many emulators; without
+        // independent GNOME evidence we must not identify it as GNOME Terminal.
+        assert_eq!(
+            classify_identity("xterm-256color", None, None, None),
+            TerminalIdentity::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_unknown_terminal() {
+        assert_eq!(
+            classify_identity("dumb", None, None, None),
+            TerminalIdentity::Unknown
+        );
+    }
+
+    #[test]
     fn color_depth_falls_back_to_none_without_signals() {
-        // The dev environment may set COLORTERM, so we only assert the enum is
-        // well-formed, not a specific value.
         let depth = detect_color_depth();
         assert!(matches!(
             depth,
@@ -316,6 +430,18 @@ mod tests {
         if let Ok(session) = TerminalSession::enter() {
             assert!(session.active);
             drop(session);
+        }
+    }
+
+    #[test]
+    fn terminal_session_restore_is_idempotent() {
+        if let Ok(mut session) = TerminalSession::enter() {
+            assert!(session.active);
+            session.restore();
+            assert!(!session.active);
+            // Calling restore again must be a no-op, not a panic.
+            session.restore();
+            assert!(!session.active);
         }
     }
 }

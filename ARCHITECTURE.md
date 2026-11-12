@@ -1,8 +1,7 @@
 # YouTube CLI — Architecture
 
 ## Status
-Phase 0.1 complete: terminal shell + renderer selection + application state.
-Compiles cleanly, clippy-clean, fmt-clean, 19 tests passing.
+Phase 0.2 complete: terminal shell hardened. Compiles cleanly, clippy-clean, fmt-clean, 28 tests passing.
 No YouTube integration. No FFmpeg decode yet. Video playback does not work and is not claimed.
 
 ## Goals
@@ -63,9 +62,15 @@ pub struct TerminalCapabilities {
 ```
 
 Detection:
-- Identity: `TERM=xterm-kitty` → Kitty; `xterm-256color`/`xterm-color`/gnome → GnomeTerminal.
-- Truecolor: conservative — requires `COLORTERM=truecolor` or `24bit`. `xterm-kitty`
-  or `xterm-256color` alone does NOT imply truecolor.
+- Identity (`classify_identity`, pure and testable) uses independent evidence
+  in priority order: `KITTY_WINDOW_ID` → Kitty; `TERMINAL_EMULATOR=kitty`
+  → Kitty; `TERM` contains "kitty" → Kitty; `VTE_VERSION` → GNOME Terminal;
+  `TERMINAL_EMULATOR` contains "gnome" → GNOME Terminal; `TERM` contains
+  "gnome" → GNOME Terminal; otherwise Unknown. `xterm-256color` is shared by
+  many emulators and is **not** treated as GNOME Terminal without independent
+  evidence.
+- Truecolor: conservative — requires `COLORTERM=truecolor` or `24bit`.
+  `xterm-kitty`/`xterm-256color` alone does NOT imply truecolor.
 - Unicode: detected from `LC_ALL`/`LC_CTYPE`/`LANG` UTF-8 locale, never assumed.
 - Kitty graphics protocol: `graphics_protocol_available()` returns `false` —
   we never claim graphics support merely because TERM contains "kitty".
@@ -88,8 +93,9 @@ pub struct App { playback, renderer, mode, should_quit, frame_count }
 
 ### Clock abstraction
 Playback advances by elapsed wall-clock time via `App::update(elapsed)`, not a
-fixed tick. `Clock` trait with `InstantClock` (production) and `FixedClock`
-(deterministic tests). Paused/stopped playback does not advance.
+fixed tick. The terminal event loop (`run`) integrates the `Clock` trait,
+passing `InstantClock` in production. `FixedClock` is available for
+deterministic tests. Paused/stopped playback does not advance.
 
 ### Render modes
 1. **ANSI filled (half-blocks ▀)** — truecolor foreground/background per cell,
@@ -120,7 +126,7 @@ Terminal lifecycle uses `TerminalSession`, an RAII guard that enters raw mode
 failures unwind cleanly (alternate screen left, raw mode disabled) without
 leaving the terminal broken.
 
-Phase 0.1 renders a synthetic color-bar test pattern so terminal output is
+Phase 0.2 renders a synthetic color-bar test pattern so terminal output is
 visible immediately. Real decoded frames flow through the same
 `renderer.render` path in Phase 1.
 
