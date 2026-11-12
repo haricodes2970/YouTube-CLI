@@ -1,8 +1,8 @@
 # YouTube CLI — Architecture
 
 ## Status
-Milestone 1A complete: real video frame decoding via FFmpeg/FFprobe subprocesses.
-Compiles cleanly, clippy-clean, fmt-clean, 45 tests passing (39 unit + 6 integration).
+Milestone 1B complete: playback engine reliability and rendering improvements.
+Compiles cleanly, clippy-clean, fmt-clean, 60 tests passing (54 unit + 6 integration).
 No YouTube integration. No audio yet. Real playback not yet demonstrated in a
 terminal emulator (requires TTY).
 
@@ -95,6 +95,13 @@ UTF-8 locale, never assumed.
 The graphics-protocol probe (`graphics_protocol_available`) returns `false`
 — we never claim Kitty graphics support merely because TERM contains "kitty".
 
+### Rendering improvements (Milestone 1B)
+- Monochrome ASCII uses a denser 16-level luminance ramp (`@ # W $ 9 8 7 6 5 4 3 2 1 0 ?`) for better detail preservation.
+- Color ASCII and monochrome ASCII apply terminal character aspect-ratio
+  correction (`CHAR_ASPECT_RATIO = 0.5`) so images are not stretched vertically.
+- ANSI truecolor half-block renderer has a bounds-check fix.
+- `VideoFrame::validate()` checks buffer size before rendering.
+
 ### Renderer ownership — single authoritative renderer
 `App` owns the single active `Box<dyn VideoRenderer>`. `run(&mut app, clock)`
 draws from `app.renderer`. `App::set_mode` replaces the renderer in place;
@@ -156,7 +163,8 @@ Glyph choice by luminance bucket; `@ # S % ? * + ; : . `.
 ```
 main → detect_capabilities() → App::new(&caps)
        [--mode N → app.set_mode(mode)]
-       [play <file> → app.play(path): probe + spawn decoder + start thread]
+       [play <file> → app.play(path): probe + spawn decoder + start thread;
+        playback.state = Playing (auto-start)]
 run(&mut app, InstantClock::new()):
   TerminalSession::enter()   // RAII: raw mode + alternate screen
   loop:

@@ -5,6 +5,7 @@ use std::process::Command;
 /// Video metadata extracted via FFprobe.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VideoMetadata {
+    pub file_path: String,
     pub width: u32,
     pub height: u32,
     pub codec: String,
@@ -121,6 +122,7 @@ pub fn probe(path: &str) -> Result<VideoMetadata> {
     let pixel_format = stream.pix_fmt.unwrap_or_else(|| "unknown".to_string());
 
     Ok(VideoMetadata {
+        file_path: path.to_string(),
         width,
         height,
         codec,

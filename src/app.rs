@@ -162,8 +162,8 @@ impl App {
     /// Open and start decoding a local video file.
     ///
     /// Probes metadata via FFprobe, spawns the FFmpeg decoder subprocess, and
-    /// launches the decoder thread. Playback is left stopped; call
-    /// `toggle_playback()` to begin.
+    /// launches the decoder thread. Playback starts automatically in the
+    /// Playing state so the user sees video immediately.
     pub fn play(&mut self, path: &str) -> Result<(), crate::error::AppError> {
         // Stop any existing playback first.
         self.stop();
@@ -191,6 +191,7 @@ impl App {
             .as_ref()
             .map(|m| Duration::from_secs_f64(m.duration_secs));
         self.playback.position = Duration::ZERO;
+        self.playback.state = PlaybackState::Playing;
         self.current_frame = None;
         self.pending_frame = None;
 
@@ -248,6 +249,9 @@ impl App {
     /// Advance playback by `elapsed` wall-clock time. Pulls decoded frames
     /// from the queue and sets the current render frame based on
     /// presentation timestamp. Paused and stopped playback do not advance.
+    ///
+    /// When the decoder thread has finished (EOF) and the queue is drained,
+    /// playback transitions to Stopped at the duration boundary.
     pub fn update(&mut self, elapsed: Duration) {
         if self.playback.state != PlaybackState::Playing {
             return;
@@ -290,6 +294,28 @@ impl App {
         if let Some(queued) = latest_valid {
             self.current_frame = Some(queued.frame);
             self.frame_count += 1;
+        } else if self.decoder_thread_is_done() {
+            // Decoder has finished and no more frames are available:
+            // playback is complete.
+            if let Some(duration) = self.playback.duration {
+                self.playback.state = PlaybackState::Stopped;
+                self.playback.position = duration;
+            }
+        }
+    }
+
+    /// Returns true when the decoder thread has finished and no pending
+    /// frame is held, meaning no more frames will be produced.
+    fn decoder_thread_is_done(&self) -> bool {
+        // If we have a pending frame, the decoder may still produce more.
+        if self.pending_frame.is_some() {
+            return false;
+        }
+        // If the decoder thread has been cleaned up (None) or has finished,
+        // no more frames will be produced.
+        match &self.decoder_thread {
+            None => true,
+            Some(dt) => dt.is_finished(),
         }
     }
 }
@@ -479,5 +505,184 @@ mod tests {
             timestamp_ms: 0,
         };
         assert!(bad.validate().is_err());
+    }
+
+    /// --- Phase 1B playback behavior tests ---
+
+    #[test]
+    fn initial_state_is_stopped_before_play() {
+        let a = app();
+        assert_eq!(a.playback.state, PlaybackState::Stopped);
+        assert_eq!(a.playback.position, Duration::ZERO);
+        assert!(a.current_frame.is_none());
+    }
+
+    #[test]
+    fn pause_and_resume_preserves_position() {
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        a.playback.position = Duration::from_secs(5);
+
+        a.toggle_playback();
+        assert_eq!(a.playback.state, PlaybackState::Paused);
+        assert_eq!(a.playback.position, Duration::from_secs(5));
+
+        a.toggle_playback();
+        assert_eq!(a.playback.state, PlaybackState::Playing);
+        assert_eq!(a.playback.position, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn update_advances_position_when_playing() {
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        let before = a.playback.position;
+        a.update(Duration::from_secs(1));
+        assert_eq!(a.playback.position, before + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn update_stops_at_duration_boundary() {
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        a.playback.duration = Some(Duration::from_secs(5));
+        a.playback.position = Duration::from_secs(4);
+
+        a.update(Duration::from_secs(2));
+        assert_eq!(a.playback.state, PlaybackState::Stopped);
+        assert_eq!(a.playback.position, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn frame_scheduling_selects_correct_pts() {
+        use crate::queue::QueuedFrame;
+        use crate::renderer::VideoFrame;
+
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        a.playback.position = Duration::ZERO;
+        a.playback.duration = Some(Duration::from_secs(10));
+
+        let queue = FrameQueue::new(8);
+        // Push frames at PTS 0.0, 1.0, 2.0 seconds.
+        queue.push(QueuedFrame {
+            frame: VideoFrame {
+                width: 2,
+                height: 2,
+                pixels: vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255],
+                timestamp_ms: 0,
+            },
+            pts_secs: 0.0,
+        });
+        queue.push(QueuedFrame {
+            frame: VideoFrame {
+                width: 2,
+                height: 2,
+                pixels: vec![255, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255],
+                timestamp_ms: 1000,
+            },
+            pts_secs: 1.0,
+        });
+        queue.push(QueuedFrame {
+            frame: VideoFrame {
+                width: 2,
+                height: 2,
+                pixels: vec![0, 255, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255],
+                timestamp_ms: 2000,
+            },
+            pts_secs: 2.0,
+        });
+        a.queue = Some(queue);
+
+        // Position 0.5s → frame at PTS 0.0 (latest <= 0.5).
+        a.update(Duration::from_secs_f64(0.5));
+        assert_eq!(a.current_frame.as_ref().unwrap().timestamp_ms, 0);
+        assert_eq!(a.frame_count, 1);
+
+        // Position 1.5s → frame at PTS 1.0 (latest <= 1.5).
+        a.update(Duration::from_secs_f64(1.0));
+        assert_eq!(a.current_frame.as_ref().unwrap().timestamp_ms, 1000);
+        assert_eq!(a.frame_count, 2);
+
+        // Position 2.5s → frame at PTS 2.0 (latest <= 2.5).
+        a.update(Duration::from_secs_f64(1.0));
+        assert_eq!(a.current_frame.as_ref().unwrap().timestamp_ms, 2000);
+        assert_eq!(a.frame_count, 3);
+    }
+
+    #[test]
+    fn frame_scheduling_holds_future_frame() {
+        use crate::queue::QueuedFrame;
+        use crate::renderer::VideoFrame;
+
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        a.playback.position = Duration::ZERO;
+
+        let queue = FrameQueue::new(8);
+        // Only frame is at PTS 5.0, position is 0.0 → not yet displayable.
+        queue.push(QueuedFrame {
+            frame: VideoFrame {
+                width: 2,
+                height: 2,
+                pixels: vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255],
+                timestamp_ms: 5000,
+            },
+            pts_secs: 5.0,
+        });
+        a.queue = Some(queue);
+
+        a.update(Duration::from_secs(1));
+        // Position 1.0 < 5.0, so no frame is displayable yet.
+        assert!(a.current_frame.is_none());
+        // The future frame is held in pending_frame.
+        assert!(a.pending_frame.is_some());
+        assert_eq!(a.pending_frame.as_ref().unwrap().pts_secs, 5.0);
+    }
+
+    #[test]
+    fn eof_transitions_to_stopped() {
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        a.playback.position = Duration::from_secs(5);
+        a.playback.duration = Some(Duration::from_secs(10));
+        // decoder_thread = None simulates a finished/cleaned-up decoder.
+        a.decoder_thread = None;
+        a.queue = Some(FrameQueue::new(8));
+        a.pending_frame = None;
+
+        a.update(Duration::from_secs(0));
+        assert_eq!(a.playback.state, PlaybackState::Stopped);
+        assert_eq!(a.playback.position, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn renderer_switch_does_not_restart_decoder() {
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        a.playback.position = Duration::from_secs(3);
+
+        a.set_mode(RenderMode::MonoAscii);
+        assert_eq!(a.renderer.mode(), RenderMode::MonoAscii);
+        // Playback position untouched by renderer switch.
+        assert_eq!(a.playback.position, Duration::from_secs(3));
+        assert_eq!(a.playback.state, PlaybackState::Playing);
+    }
+
+    #[test]
+    fn set_mode_all_three_preserves_position() {
+        let mut a = app();
+        a.playback.state = PlaybackState::Playing;
+        a.playback.position = Duration::from_secs(7);
+
+        for mode in [
+            RenderMode::AnsiFilled,
+            RenderMode::ColorAscii,
+            RenderMode::MonoAscii,
+        ] {
+            a.set_mode(mode);
+            assert_eq!(a.playback.position, Duration::from_secs(7));
+            assert_eq!(a.playback.state, PlaybackState::Playing);
+        }
     }
 }

@@ -1,16 +1,13 @@
 use crate::app::{App, PlaybackState};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::{Span, Text};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 /// Draw one frame of the TUI using the app's authoritative active renderer.
-///
-/// The video area renders the latest decoded frame pulled from the frame
-/// queue. If no frame is available yet (decoder starting, EOF, or stopped),
-/// a placeholder message is shown.
 pub fn draw(f: &mut Frame, app: &App) {
+    let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -18,7 +15,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Min(0),    // video area
             Constraint::Length(3), // status bar
         ])
-        .split(f.area());
+        .split(area);
 
     draw_header(f, app, chunks[0]);
     draw_video(f, app, chunks[1]);
@@ -26,13 +23,39 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let source = app
-        .metadata
-        .as_ref()
-        .map(|m| format!("{} ({}x{})", m.codec, m.width, m.height))
-        .unwrap_or_else(|| "no video loaded".to_string());
-    let title = format!("YouTube CLI — Mode: {}  |  {}", app.renderer.name(), source);
-    let paragraph = Paragraph::new(Text::from(Span::raw(title)))
+    let state_str = match app.playback.state {
+        PlaybackState::Playing => "playing",
+        PlaybackState::Paused => "paused",
+        PlaybackState::Stopped => "stopped",
+    };
+
+    let source = app.metadata.as_ref().map(|m| {
+        let name = std::path::Path::new(&m.file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("video");
+        format!(
+            "{} ({}x{}, {} fps)",
+            name, m.width, m.height, m.frame_rate as u32
+        )
+    });
+
+    let title = if let Some(src) = &source {
+        format!(
+            "YouTube CLI — {}  |  {}  |  mode: {}",
+            src,
+            state_str,
+            app.renderer.name()
+        )
+    } else {
+        format!(
+            "YouTube CLI — {}  |  mode: {}",
+            state_str,
+            app.renderer.name()
+        )
+    };
+
+    let paragraph = Paragraph::new(Text::from(Line::from(Span::raw(title))))
         .block(Block::default().borders(Borders::ALL).title("header"));
     f.render_widget(paragraph, area);
 }
@@ -50,13 +73,13 @@ fn draw_video(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Overlay playback state as a small label in the top-left of the video area.
-    let state = match app.playback.state {
+    let state_str = match app.playback.state {
         PlaybackState::Playing => "playing",
         PlaybackState::Paused => "paused",
         PlaybackState::Stopped => "stopped",
     };
     let label = format!(
-        "state: {state}  pos: {:.1}s",
+        "state: {state_str}  pos: {:.1}s",
         app.playback.position.as_secs_f32()
     );
     let label_width = label.len().min(area.width.saturating_sub(2) as usize);
@@ -72,12 +95,10 @@ fn draw_video(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_placeholder(f: &mut Frame, area: Rect, app: &App) {
-    let text = if app.metadata.is_some() && app.playback.state == PlaybackState::Stopped {
-        "decoder ready — press space to play"
-    } else if app.metadata.is_some() {
-        "decoding…"
-    } else {
-        "no video loaded — use: youtube-cli play <file>"
+    let text = match app.playback.state {
+        PlaybackState::Stopped if app.metadata.is_some() => "decoder ready — press space to play",
+        PlaybackState::Playing | PlaybackState::Paused if app.metadata.is_some() => "decoding…",
+        _ => "no video loaded — use: youtube-cli play <file>",
     };
     let paragraph =
         Paragraph::new(Text::from(Span::raw(text))).block(Block::default().borders(Borders::ALL));
@@ -91,22 +112,55 @@ fn draw_error(f: &mut Frame, area: Rect, msg: &str) {
     f.render_widget(paragraph, area);
 }
 
+/// Draw a simple text progress bar inside `area`.
+fn draw_progress_bar(f: &mut Frame, area: Rect, app: &App) {
+    let duration = app.playback.duration.unwrap_or_default();
+    if duration == Duration::ZERO {
+        return;
+    }
+    let position = app.playback.position;
+    let ratio = if position >= duration {
+        1.0
+    } else {
+        position.as_secs_f64() / duration.as_secs_f64()
+    };
+    let width = area.width.max(1) as usize;
+    let filled = (width as f64 * ratio) as usize;
+    let bar = "█".repeat(filled).to_string() + &"░".repeat(width.saturating_sub(filled));
+    let paragraph =
+        Paragraph::new(Text::from(Span::raw(bar))).style(Style::default().fg(Color::Green));
+    f.render_widget(paragraph, area);
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let help = "q: quit  1/2/3: renderer  space: play/pause  ←/→: seek";
     let position = app.playback.position.as_secs_f32();
     let duration = app
         .playback
         .duration
         .map(|d| d.as_secs_f32())
         .unwrap_or(0.0);
-    let volume = app.playback.volume;
+
+    // Progress bar line.
+    let bar_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+
+    draw_progress_bar(f, bar_chunks[0], app);
+
+    // Status text line.
+    let state_str = match app.playback.state {
+        PlaybackState::Playing => "playing",
+        PlaybackState::Paused => "paused",
+        PlaybackState::Stopped => "stopped",
+    };
     let status = format!(
-        "pos {position:.1}s / {duration:.1}s  vol {volume}%  frames {}{}",
-        app.frame_count,
-        if app.should_quit { "  quitting" } else { "" }
+        "pos {position:.1}s / {duration:.1}s  |  state: {state_str}  |  frames: {}  |  q: quit  1/2/3: renderer  space: play/pause  ←/→: seek",
+        app.frame_count
     );
-    let text = format!("{help}  |  {status}");
     let paragraph =
-        Paragraph::new(Text::from(Span::raw(text))).block(Block::default().borders(Borders::ALL));
-    f.render_widget(paragraph, area);
+        Paragraph::new(Text::from(Span::raw(status))).block(Block::default().borders(Borders::ALL));
+    f.render_widget(paragraph, bar_chunks[1]);
 }
+
+use std::time::Duration;

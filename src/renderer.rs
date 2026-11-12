@@ -102,3 +102,79 @@ pub fn ascii_char(lum: u8) -> char {
         _ => ' ',
     }
 }
+
+/// ASCII character for monochrome rendering with a denser luminance ramp.
+/// Uses 16 perceptually spaced levels to preserve more image detail.
+pub fn mono_ascii_char(lum: u8) -> char {
+    match lum {
+        0..=15 => '@',
+        16..=31 => '#',
+        32..=47 => 'W',
+        48..=63 => '$',
+        64..=79 => '9',
+        80..=95 => '8',
+        96..=111 => '7',
+        112..=127 => '6',
+        128..=143 => '5',
+        144..=159 => '4',
+        160..=175 => '3',
+        176..=191 => '2',
+        192..=207 => '1',
+        208..=223 => '0',
+        224..=239 => '?',
+        _ => ' ',
+    }
+}
+
+/// Approximate aspect ratio of a terminal character cell (width / height).
+/// Most terminal fonts render characters roughly twice as tall as they are
+/// wide, so a value of 0.5 compensates when sampling source pixels.
+pub const CHAR_ASPECT_RATIO: f64 = 0.5;
+
+/// --- Phase 1B rendering tests ---
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn luminance_mapping_is_monotonic() {
+        let dark = luminance(10, 10, 10);
+        let mid = luminance(128, 128, 128);
+        let bright = luminance(240, 240, 240);
+        assert!(dark < mid);
+        assert!(mid < bright);
+    }
+
+    #[test]
+    fn ascii_char_covers_full_range() {
+        let chars: Vec<char> = (0..=255).step_by(17).map(ascii_char).collect();
+        assert!(chars.len() > 5);
+        assert_eq!(chars[0], '@');
+        assert_eq!(chars[chars.len() - 1], ' ');
+    }
+
+    #[test]
+    fn mono_ascii_char_covers_full_range() {
+        let chars: Vec<char> = (0..=255).step_by(17).map(mono_ascii_char).collect();
+        assert!(chars.len() > 5);
+        assert_eq!(chars[0], '@');
+        assert_eq!(chars[chars.len() - 1], ' ');
+    }
+
+    #[test]
+    fn char_aspect_ratio_is_sensible() {
+        assert_eq!(CHAR_ASPECT_RATIO, 0.5);
+    }
+
+    #[test]
+    fn video_frame_expected_size_matches_dimensions() {
+        let frame = VideoFrame {
+            width: 10,
+            height: 20,
+            pixels: vec![0; 10 * 20 * 3],
+            timestamp_ms: 0,
+        };
+        assert_eq!(frame.expected_size(), 600);
+        assert!(frame.validate().is_ok());
+    }
+}

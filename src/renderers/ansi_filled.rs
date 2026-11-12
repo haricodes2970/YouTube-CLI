@@ -51,7 +51,7 @@ impl VideoRenderer for AnsiFilledRenderer {
 
                 let x = area.x + cx as u16;
                 let y = area.y + cy as u16;
-                if x < area.width || y >= area.height {
+                if x >= area.width || y >= area.height {
                     continue;
                 }
                 let cell = &mut buf[(x, y)];

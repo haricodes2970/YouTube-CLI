@@ -1,10 +1,16 @@
-use crate::renderer::{ascii_char, luminance, RenderMode, VideoFrame, VideoRenderer};
+use crate::renderer::{
+    ascii_char, luminance, RenderMode, VideoFrame, VideoRenderer, CHAR_ASPECT_RATIO,
+};
 use crate::terminal::{ColorDepth, TerminalCapabilities};
 use crate::AppError;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
+
 /// Mode 2: color ASCII — one ASCII char per pixel cell, colored truecolor.
+///
+/// Applies aspect-ratio correction so the image is not stretched vertically
+/// by tall terminal characters.
 pub struct ColorAsciiRenderer;
 
 impl ColorAsciiRenderer {
@@ -35,10 +41,13 @@ impl VideoRenderer for ColorAsciiRenderer {
         let src_w = frame.width.max(1) as usize;
         let src_h = frame.height.max(1) as usize;
 
+        // Account for terminal character aspect ratio (~0.5 width/height).
+        let eff_src_h = (src_h as f64 * CHAR_ASPECT_RATIO) as usize;
+
         for cy in 0..area_h {
             for cx in 0..area_w {
                 let sx = (cx * src_w) / area_w;
-                let sy = (cy * src_h) / area_h;
+                let sy = (cy * eff_src_h) / area_h;
                 let (r, g, b) = pixel(frame, sx, sy, src_w, src_h);
                 let lum = luminance(r, g, b);
                 let ch = ascii_char(lum);

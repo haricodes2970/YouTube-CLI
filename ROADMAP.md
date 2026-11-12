@@ -65,7 +65,30 @@
   `cargo test`, `cargo build` all clean (45 tests total)
 - Docs: ARCHITECTURE.md, ROADMAP.md updated
 
-## Milestone 1B (next): Terminal playback demonstration
+## Milestone 1B (done): Playback engine reliability and rendering improvements
+- Auto-start playback: `App::play()` sets `state = Playing` immediately
+- Bounded queue: `mpsc::sync_channel` with backpressure; decoder blocks when
+  queue is full, preventing unbounded memory growth
+- Pausing does not consume frames; decoder blocks on full queue
+- Resuming continues without restarting the decoder
+- EOF → Stopped transition when decoder thread finishes and queue drains
+- Frame scheduling by PTS: `update(elapsed)` selects frames with pts <= position
+- Frame counter tracks displayed frames
+- Renderer switching mid-playback does not reset position or restart decoder
+- Monochrome ASCII: denser 16-level luminance ramp for better detail
+- Color ASCII + monochrome ASCII: terminal character aspect-ratio correction
+  (CHAR_ASPECT_RATIO = 0.5) prevents vertical stretching
+- ANSI truecolor: bounds-check fix
+- Improved UI: header shows filename, codec, resolution, state, mode;
+  footer shows progress bar, position/duration, frame count, shortcuts
+- Tests: 54 unit + 6 integration (auto-start, pause/resume, clock progression,
+  frame scheduling, EOF, queue consumption, frame counter, renderer switching,
+  luminance mapping, aspect ratio, invalid buffers)
+- `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`,
+  `cargo test`, `cargo build` all clean (60 tests total)
+- Docs: ARCHITECTURE.md, ROADMAP.md updated
+
+## Milestone 2 (next): Terminal playback demonstration
 - Run `youtube-cli play <file>` in a real terminal emulator (Kitty, GNOME Terminal)
 - Verify frames render at correct frame rate in all three modes
 - Verify renderer switching mid-playback doesn't reset position
@@ -88,7 +111,7 @@
 - Audio (video-first; audio sync considered in Milestone 2)
 - GUI, web, mobile
 
-## Success gate for Milestone 1B
+## Success gate for Milestone 2
 A video file plays in the terminal at a visible frame rate, renderer-switchable at runtime,
 with `cargo test` still green. Until that is demonstrated in Kitty and GNOME Terminal,
 playback is not claimed to work.
