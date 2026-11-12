@@ -2,17 +2,42 @@ use crate::terminal::TerminalCapabilities;
 use crate::AppError;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use std::result::Result;
 
 /// A decoded video frame, ready for rendering but not yet on screen.
 ///
 /// Kept decoder-independent: the renderer only sees pixels + metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
     /// RGB888 pixels, row-major.
     pub pixels: Vec<u8>,
     pub timestamp_ms: u64,
+}
+
+impl VideoFrame {
+    /// Expected pixel buffer size for this frame (width * height * 3).
+    pub fn expected_size(&self) -> usize {
+        self.width as usize * self.height as usize * 3
+    }
+
+    /// Validate that the pixel buffer matches the frame dimensions.
+    ///
+    /// Returns an error if the buffer is too small or too large.
+    pub fn validate(&self) -> Result<(), AppError> {
+        let expected = self.expected_size();
+        if self.pixels.len() != expected {
+            return Err(AppError::Renderer(format!(
+                "frame buffer size {} does not match expected {} ({}x{}x3)",
+                self.pixels.len(),
+                expected,
+                self.width,
+                self.height
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Renderer interface. New modes add one implementor; nothing else changes.

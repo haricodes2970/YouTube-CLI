@@ -2,13 +2,27 @@ use anyhow::Result;
 use clap::Parser;
 use youtube_cli::{app::App, detect_capabilities, renderer::RenderMode, run};
 
-/// YouTube CLI — Linux-first terminal YouTube client (Phase 0 shell).
+/// YouTube CLI — Linux-first terminal YouTube client (Milestone 1A: real video frame decoding).
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// Play a local video file.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Force a render mode: 1 (ANSI truecolor), 2 (color ASCII), 3 (monochrome ASCII).
     #[arg(short = 'm', long = "mode", value_parser = parse_mode)]
     mode: Option<RenderMode>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Play a local video file in the terminal.
+    Play {
+        /// Path to the video file.
+        #[arg(value_name = "FILE")]
+        path: String,
+    },
 }
 
 fn parse_mode(s: &str) -> Result<RenderMode, String> {
@@ -31,6 +45,11 @@ fn main() -> Result<()> {
     // whole lifecycle.
     if let Some(mode) = cli.mode {
         app.set_mode(mode);
+    }
+
+    // If a play command was given, open the video file.
+    if let Some(Command::Play { path }) = cli.command {
+        app.play(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     run(&mut app, youtube_cli::app::InstantClock::new())?;

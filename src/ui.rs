@@ -1,5 +1,4 @@
-use crate::app::App;
-use crate::renderer::VideoFrame;
+use crate::app::{App, PlaybackState};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Span, Text};
@@ -7,6 +6,10 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 /// Draw one frame of the TUI using the app's authoritative active renderer.
+///
+/// The video area renders the latest decoded frame pulled from the frame
+/// queue. If no frame is available yet (decoder starting, EOF, or stopped),
+/// a placeholder message is shown.
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -23,23 +26,34 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let title = format!("YouTube CLI — Phase 0 (mode: {})", app.renderer.name());
+    let source = app
+        .metadata
+        .as_ref()
+        .map(|m| format!("{} ({}x{})", m.codec, m.width, m.height))
+        .unwrap_or_else(|| "no video loaded".to_string());
+    let title = format!("YouTube CLI — Mode: {}  |  {}", app.renderer.name(), source);
     let paragraph = Paragraph::new(Text::from(Span::raw(title)))
         .block(Block::default().borders(Borders::ALL).title("header"));
     f.render_widget(paragraph, area);
 }
 
 fn draw_video(f: &mut Frame, app: &App, area: Rect) {
-    // Phase 0: render a synthetic color-bar test pattern so output is visible
-    // without any FFmpeg decode. Real frames come through this same path later.
-    let frame = test_pattern(area.width, area.height);
-    let _ = app.renderer.render(&frame, area, f.buffer_mut());
+    if let Some(frame) = &app.current_frame {
+        // Validate frame buffer size before rendering.
+        if frame.validate().is_err() {
+            draw_error(f, area, "invalid frame buffer");
+            return;
+        }
+        let _ = app.renderer.render(frame, area, f.buffer_mut());
+    } else {
+        draw_placeholder(f, area, app);
+    }
 
     // Overlay playback state as a small label in the top-left of the video area.
     let state = match app.playback.state {
-        crate::app::PlaybackState::Playing => "playing",
-        crate::app::PlaybackState::Paused => "paused",
-        crate::app::PlaybackState::Stopped => "stopped",
+        PlaybackState::Playing => "playing",
+        PlaybackState::Paused => "paused",
+        PlaybackState::Stopped => "stopped",
     };
     let label = format!(
         "state: {state}  pos: {:.1}s",
@@ -55,6 +69,26 @@ fn draw_video(f: &mut Frame, app: &App, area: Rect) {
         height: 1,
     };
     f.render_widget(paragraph, label_area);
+}
+
+fn draw_placeholder(f: &mut Frame, area: Rect, app: &App) {
+    let text = if app.metadata.is_some() && app.playback.state == PlaybackState::Stopped {
+        "decoder ready — press space to play"
+    } else if app.metadata.is_some() {
+        "decoding…"
+    } else {
+        "no video loaded — use: youtube-cli play <file>"
+    };
+    let paragraph =
+        Paragraph::new(Text::from(Span::raw(text))).block(Block::default().borders(Borders::ALL));
+    f.render_widget(paragraph, area);
+}
+
+fn draw_error(f: &mut Frame, area: Rect, msg: &str) {
+    let paragraph = Paragraph::new(Text::from(Span::raw(msg)))
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::Red));
+    f.render_widget(paragraph, area);
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -75,28 +109,4 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let paragraph =
         Paragraph::new(Text::from(Span::raw(text))).block(Block::default().borders(Borders::ALL));
     f.render_widget(paragraph, area);
-}
-
-/// Synthetic color-bar test pattern (Phase 0 placeholder for decoded frames).
-fn test_pattern(width: u16, height: u16) -> VideoFrame {
-    let w = width.max(1) as u32;
-    let h = height.max(1) as u32;
-    let mut pixels = Vec::with_capacity((w * h * 3) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            // Vertical color bars + a luminance ramp so all three modes show something.
-            let r = (x * 255 / w.max(1)) as u8;
-            let g = ((w.max(1) - x) * 255 / w.max(1)) as u8;
-            let b = (y * 255 / h.max(1)) as u8;
-            pixels.push(r);
-            pixels.push(g);
-            pixels.push(b);
-        }
-    }
-    VideoFrame {
-        width: w,
-        height: h,
-        pixels,
-        timestamp_ms: 0,
-    }
 }
