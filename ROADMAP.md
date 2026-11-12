@@ -11,6 +11,23 @@
 - Docs: ARCHITECTURE.md, ROADMAP.md
 - Builds cleanly with `cargo build`; `cargo test` green
 
+## Milestone 0.1 (done): Architecture corrections
+- Single authoritative renderer owned by `App`; `run(&mut app)` draws from it
+- `--mode 2` (ColorAsciiRenderer) forced correctly through the full lifecycle
+- Terminal detection: `TerminalIdentity` separate from `TerminalCapabilities`;
+  recognizes `xterm-kitty`; conservative truecolor (`COLORTERM=truecolor`);
+  Unicode from UTF-8 locale; `graphics_protocol_available()` returns false
+  (no Kitty graphics claim from TERM alone)
+- Playback timing: elapsed-time `App::update(elapsed)` via `Clock` trait
+  (`InstantClock` production, `FixedClock` tests); paused/stopped don't advance
+- Terminal lifecycle: RAII `TerminalSession` guard restores raw mode, alternate
+  screen, cursor on drop; init failures unwind cleanly
+- Regression tests: mode switching all three modes preserves playback position;
+  forced renderer; deterministic clock
+- `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`,
+  `cargo test`, `cargo build` all clean
+- Docs: ARCHITECTURE.md, ROADMAP.md updated
+
 ## Milestone 1 (next): FFmpeg frame decode + render
 - Invoke `ffmpeg` / `ffprobe` as subprocess (no native dev libs)
 - Decode a video file to rawvideo RGB frames via `std::process::Command`

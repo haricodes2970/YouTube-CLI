@@ -46,8 +46,8 @@ impl VideoRenderer for AnsiFilledRenderer {
                 let top_y = (cy * 2 * src_h) / cell_h;
                 let bot_y = ((cy * 2 + 1) * src_h) / cell_h;
 
-                let top = pixel(&frame, sx, top_y, src_w, src_h);
-                let bot = pixel(&frame, sx, bot_y, src_w, src_h);
+                let top = pixel(frame, sx, top_y, src_w, src_h);
+                let bot = pixel(frame, sx, bot_y, src_w, src_h);
 
                 let x = area.x + cx as u16;
                 let y = area.y + cy as u16;

@@ -1,41 +1,39 @@
 use crate::app::App;
-use crate::renderer::{VideoRenderer, VideoFrame};
+use crate::renderer::VideoFrame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};use ratatui::text::{Span, Text};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-/// Draw one frame of the TUI.
-pub fn draw(f: &mut Frame, app: &App, renderer: &dyn VideoRenderer) {
+/// Draw one frame of the TUI using the app's authoritative active renderer.
+pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // header
-            Constraint::Min(0),     // video area
-            Constraint::Length(3),  // status bar
+            Constraint::Length(3), // header
+            Constraint::Min(0),    // video area
+            Constraint::Length(3), // status bar
         ])
         .split(f.area());
 
     draw_header(f, app, chunks[0]);
-    draw_video(f, app, renderer, chunks[1]);
+    draw_video(f, app, chunks[1]);
     draw_status(f, app, chunks[2]);
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let title = format!(
-        "YouTube CLI — Phase 0 (mode: {})",
-        app.renderer.name()
-    );
+    let title = format!("YouTube CLI — Phase 0 (mode: {})", app.renderer.name());
     let paragraph = Paragraph::new(Text::from(Span::raw(title)))
         .block(Block::default().borders(Borders::ALL).title("header"));
     f.render_widget(paragraph, area);
 }
 
-fn draw_video(f: &mut Frame, app: &App, renderer: &dyn VideoRenderer, area: Rect) {
+fn draw_video(f: &mut Frame, app: &App, area: Rect) {
     // Phase 0: render a synthetic color-bar test pattern so output is visible
     // without any FFmpeg decode. Real frames come through this same path later.
     let frame = test_pattern(area.width, area.height);
-    let _ = renderer.render(&frame, area, f.buffer_mut());
+    let _ = app.renderer.render(&frame, area, f.buffer_mut());
 
     // Overlay playback state as a small label in the top-left of the video area.
     let state = match app.playback.state {
@@ -43,7 +41,10 @@ fn draw_video(f: &mut Frame, app: &App, renderer: &dyn VideoRenderer, area: Rect
         crate::app::PlaybackState::Paused => "paused",
         crate::app::PlaybackState::Stopped => "stopped",
     };
-    let label = format!("state: {state}  pos: {:.1}s", app.playback.position.as_secs_f32());
+    let label = format!(
+        "state: {state}  pos: {:.1}s",
+        app.playback.position.as_secs_f32()
+    );
     let label_width = label.len().min(area.width.saturating_sub(2) as usize);
     let paragraph = Paragraph::new(Text::from(Span::raw(label)))
         .style(Style::default().bg(Color::Black).fg(Color::Green));
@@ -71,8 +72,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         if app.should_quit { "  quitting" } else { "" }
     );
     let text = format!("{help}  |  {status}");
-    let paragraph = Paragraph::new(Text::from(Span::raw(text)))
-        .block(Block::default().borders(Borders::ALL));
+    let paragraph =
+        Paragraph::new(Text::from(Span::raw(text))).block(Block::default().borders(Borders::ALL));
     f.render_widget(paragraph, area);
 }
 

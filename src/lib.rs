@@ -9,7 +9,9 @@ pub mod renderers;
 pub mod terminal;
 pub mod ui;
 
-pub use app::App;
+pub use app::{App, Clock, FixedClock, InstantClock, Playback, PlaybackState};
 pub use error::AppError;
-pub use renderer::{RenderMode, VideoRenderer};
-pub use terminal::{detect_capabilities, select_renderer, run, ColorDepth, TerminalCapabilities};
+pub use renderer::{RenderMode, VideoFrame, VideoRenderer};
+pub use terminal::{
+    detect_capabilities, detect_identity, run, ColorDepth, TerminalCapabilities, TerminalIdentity,
+};
